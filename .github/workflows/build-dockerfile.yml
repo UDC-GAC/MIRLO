@@ -1,0 +1,15 @@
+name: test Dockerfile build
+on:
+    push:
+        branches: [ master ]
+    pull_request:
+        branches: [ master ]
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+        - name: checkout
+          uses: actions/checkout@v2
+        - name: build Dockerfile
+          run: sudo docker build .
+          working-directory: ${{ github.workspace }}
