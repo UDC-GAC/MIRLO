@@ -70,10 +70,10 @@ class MIRLOModel(LPIModel):
     def _tune_hyperparameters(self, X, y):
         hyperparams = {
             'epochs': [50],
-            'layers': [2, 4],
-            'neurons': [64, 128],
-            'dropout': [.5, .6, .7],
-            'learning_rate': [.01, .001]
+            'layers': [1],
+            'neurons': [32],
+            'dropout': [.5],
+            'learning_rate': [.01]
         }
 
         params = []
