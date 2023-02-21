@@ -33,6 +33,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import numpy as np
 import tensorflow as tf
 
+from joblib import dump, load
+
 from itertools import product
 
 from argparse import ArgumentParser
@@ -43,19 +45,18 @@ from lpi_prediction import LPIDataEncoder
 from lpi_prediction import LPIDataProvider
 from lpi_prediction import LPILabelsProvider
 
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import StratifiedKFold
 
 class MIRLOModel(LPIModel):
     def _build_model(self, params):
         model = tf.keras.models.Sequential()
 
-        model.add(tf.keras.layers.BatchNormalization())
         for _ in range(params['layers']):
-            model.add(
-                tf.keras.layers.Dense(activation='elu', units=params['neurons'])
-            )
-            model.add(tf.keras.layers.Dropout(params['dropout']))
-        model.add(tf.keras.layers.Dense(2, activation='softmax'))
+            model.add(tf.keras.layers.Dense(units=params['neurons']))
+            model.add(tf.keras.layers.PReLU())
+            model.add(tf.keras.layers.Dropout(rate=params['dropout']))
+        model.add(tf.keras.layers.Dense(units=2, activation='softmax'))
 
         model.compile(
             optimizer=tf.keras.optimizers.Adam(
@@ -69,10 +70,10 @@ class MIRLOModel(LPIModel):
 
     def _tune_hyperparameters(self, X, y):
         hyperparams = {
-            'epochs': [50],
+            'epochs': [75],
             'layers': [1],
-            'neurons': [32],
-            'dropout': [.5],
+            'dropout': [.5, .7],
+            'neurons': [128],
             'learning_rate': [.01]
         }
 
@@ -114,6 +115,9 @@ class MIRLOModel(LPIModel):
     def train(self, encoded_data):
         X, y = encoded_data['X'], encoded_data['y']
 
+        self.scaler = StandardScaler().fit(X)
+        X = self.scaler.transform(X)
+
         best_params = self._tune_hyperparameters(X, y)
         print('Best hyperparameters:')
         for key, value in best_params.items():
@@ -136,7 +140,6 @@ class MIRLOModel(LPIModel):
                 verbose=0,
                 return_dict=True
             )
-
             models.append(model)
             accuracies.append(metrics_train['accuracy'])
 
@@ -145,6 +148,7 @@ class MIRLOModel(LPIModel):
 
     def evaluate(self, encoded_data):
         X, y = encoded_data['X'], encoded_data['y']
+        X = self.scaler.transform(X)
 
         metrics = self.model.evaluate(
             X,
@@ -159,6 +163,7 @@ class MIRLOModel(LPIModel):
 
     def predict(self, encoded_data):
         names, X = encoded_data['names'], encoded_data['X']
+        X = self.scaler.transform(X)
         y = self.model.predict(X, verbose=0)[:, 1]
 
         predictions = ['# RNA\tProtein\tLabel\tScore\n']
@@ -173,10 +178,12 @@ class MIRLOModel(LPIModel):
         return predictions
 
     def save(self, output_file_name):
-        self.model.save(output_file_name, save_format='h5')
+        self.model.save(f'{output_file_name}.h5', save_format='h5')
+        dump(self.scaler, f'{output_file_name}.joblib')
 
     def load(self, input_file_name):
-        self.model = tf.keras.models.load_model(input_file_name)
+        self.model = tf.keras.models.load_model(f'{input_file_name}.h5')
+        self.scaler = load(f'{input_file_name}.joblib')
 
 class MIRLOEncoder(LPIDataEncoder):
     def encode(self, data):
@@ -254,7 +261,7 @@ if __name__ == '__main__':
     train_parser.add_argument('rnas', help='lncRNA sequences in FASTA format')
     train_parser.add_argument('proteins', help='protein sequences in FASTA format')
     train_parser.add_argument('labels', help='labels for the lncRNA-protein pairs')
-    train_parser.add_argument('-o', '--output', required=False, default='MIRLO.h5', help='output file name for the trained model')
+    train_parser.add_argument('-o', '--output', required=False, default='MIRLO', help='output file name for the trained model')
 
     evaluate_parser = subparsers.add_parser('evaluate', help='evaluate a model')
     evaluate_parser.add_argument('rnas', help='lncRNA sequences in FASTA format')
