@@ -48,7 +48,12 @@ from lpi_prediction import LPILabelsProvider
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 
+DO_CACHING = True
+
 class MIRLOModel(LPIModel):
+    def __init__(self):
+        self.max_epochs = 500
+
     def _build_model(self, params):
         model = tf.keras.models.Sequential()
 
@@ -68,19 +73,18 @@ class MIRLOModel(LPIModel):
 
         return model
 
-    def _tune_hyperparameters(self, X, y):
+    def _tune_hyperparameters(self, X_train, y_train, X_val, y_val):
         hyperparams = {
-            'epochs': [75],
             'layers': [1],
-            'dropout': [.5, .7],
-            'neurons': [128],
-            'learning_rate': [.01]
+            'neurons': [32, 64, 128],
+            'patience': [10, 20, 30],
+            'dropout': [0.0, 0.25, 0.5, 0.7],
+            'learning_rate': [0.1, 0.01]
         }
 
         params = []
         for param_values in product(*hyperparams.values()):
             params.append(dict(zip(hyperparams.keys(), param_values)))
-
         accuracies = [0] * len(params)
 
         bar = progressbar.ProgressBar(
@@ -91,25 +95,31 @@ class MIRLOModel(LPIModel):
                 '(', progressbar.AbsoluteETA(), ')'
             ]
         ).start()
+
         if len(params) > 1:
-            X_train, X_val, y_train, y_val = train_test_split(
-                X,
-                y,
-                stratify=y,
-                shuffle=True,
-                test_size=.2
-            )
             for i, param in enumerate(params):
-                for _ in range(5):
+                early_stopping = tf.keras.callbacks.EarlyStopping(
+                    monitor='val_loss',
+                    restore_best_weights=True,
+                    patience=param['patience']
+                )
+                for _ in range(10):
                     model = self._build_model(param)
-                    history = model.fit(
+                    model.fit(
                         X_train,
                         y_train,
                         verbose=0,
-                        epochs=param['epochs'],
+                        epochs=self.max_epochs,
+                        callbacks=[early_stopping],
                         validation_data=(X_val, y_val)
                     )
-                    accuracies[i] += history.history['val_accuracy'][-1]
+                    metrics = model.evaluate(
+                        X_val,
+                        y_val,
+                        verbose=0,
+                        return_dict=True
+                    )
+                    accuracies[i] += metrics['accuracy']
                     bar.increment()
         bar.finish()
 
@@ -118,47 +128,75 @@ class MIRLOModel(LPIModel):
     def train(self, encoded_data):
         X, y = encoded_data['X'], encoded_data['y']
 
-        self.scaler = StandardScaler().fit(X)
-        X = self.scaler.transform(X)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X,
+            y,
+            stratify=y,
+            shuffle=True,
+            test_size=.2
+        )
 
-        best_params = self._tune_hyperparameters(X, y)
+        self.scaler = StandardScaler().fit(X_train)
+        X_train = self.scaler.transform(X_train)
+        X_val = self.scaler.transform(X_val)
+
+        best_params = self._tune_hyperparameters(X_train, y_train, X_val, y_val)
         print('Best hyperparameters:')
         for key, value in best_params.items():
             print(f'  - {key}: {value}')
 
         print('Training best hypermodel...')
+
         models = []
-        accuracies = []
-        for _ in range(5):
+        early_stopping = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            restore_best_weights=True,
+            patience=best_params['patience']
+        )
+        for _ in range(10):
             model = self._build_model(best_params)
             model.fit(
-                X,
-                y,
+                X_train,
+                y_train,
                 verbose=0,
-                epochs=best_params['epochs']
+                epochs=self.max_epochs,
+                callbacks=[early_stopping],
+                validation_data=(X_val, y_val)
             )
             metrics_train = model.evaluate(
-                X,
-                y,
+                X_train,
+                y_train,
                 verbose=0,
                 return_dict=True
             )
-            models.append(model)
-            accuracies.append(metrics_train['accuracy'])
+            metrics_val = model.evaluate(
+                X_val,
+                y_val,
+                verbose=0,
+                return_dict=True
+            )
+            models.append(
+                (
+                    metrics_val['accuracy'],
+                    metrics_val['loss'],
+                    metrics_train['accuracy'],
+                    metrics_train['loss'],
+                    model
+                )
+            )
 
-        self.model = models[accuracies.index(max(accuracies))]
-        self.evaluate(encoded_data)
+        self.model = sorted(models, key=lambda x: x[0])[-1][4]
+        print('Model metrics:')
+        print(f'  - loss: {models[-1][3]:.4f}')
+        print(f'  - accuracy: {models[-1][2]:.4f}')
+        print(f'  - val_loss: {models[-1][1]:.4f}')
+        print(f'  - val_accuracy: {models[-1][0]:.4f}')
 
     def evaluate(self, encoded_data):
         X, y = encoded_data['X'], encoded_data['y']
         X = self.scaler.transform(X)
 
-        metrics = self.model.evaluate(
-            X,
-            y,
-            verbose=0,
-            return_dict=True
-        )
+        metrics = self.model.evaluate(X, y, verbose=0, return_dict=True)
 
         print('Model metrics:')
         for key, value in metrics.items():
@@ -234,6 +272,17 @@ class LIONProvider(LPIDataProvider):
         )
         tmp_file_name = next(tempfile._get_candidate_names())
 
+        if DO_CACHING:
+            import hashlib
+            cache_name = hashlib.sha256(
+                f'{self.rnas}_{self.proteins}'.encode('utf-8')
+            ).hexdigest()
+
+            if os.path.exists(f'cache/{cache_name}'):
+                with open(f'cache/{cache_name}', 'r') as f:
+                    lines = f.readlines()
+                return lines
+
         process = subprocess.Popen(
             f'Rscript {Rscript_path}'
             f' {self.rnas}'
@@ -249,6 +298,17 @@ class LIONProvider(LPIDataProvider):
         with open(tmp_file_name, 'r') as f:
             lines = f.readlines()
         os.remove(tmp_file_name)
+
+        if DO_CACHING:
+            os.makedirs('cache', exist_ok=True)
+
+            import hashlib
+            cache_name = hashlib.sha256(
+                f'{self.rnas}_{self.proteins}'.encode('utf-8')
+            ).hexdigest()
+
+            with open(f'cache/{cache_name}', 'w') as f:
+                f.writelines(lines)
 
         return lines
 
