@@ -19,4 +19,6 @@ python3 $SCRIPT_DIR/main.py predict \
                 $SCRIPT_DIR/data/NPInter/kfold/0/test/rna.fa \
                 $SCRIPT_DIR/data/NPInter/kfold/0/test/pro.fa \
                 $SCRIPT_DIR/MIRLO
-rm -rf $SCRIPT_DIR/MIRLO.h5 $SCRIPT_DIR/MIRLO_predictions.txt
+rm -rf $SCRIPT_DIR/MIRLO.h5 \
+       $SCRIPT_DIR/MIRLO.joblib \
+       $SCRIPT_DIR/MIRLO_predictions.txt

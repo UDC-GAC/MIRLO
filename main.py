@@ -46,7 +46,7 @@ from lpi_prediction import LPIDataProvider
 from lpi_prediction import LPILabelsProvider
 
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import train_test_split
 
 class MIRLOModel(LPIModel):
     def _build_model(self, params):
@@ -82,7 +82,6 @@ class MIRLOModel(LPIModel):
             params.append(dict(zip(hyperparams.keys(), param_values)))
 
         accuracies = [0] * len(params)
-        skf = StratifiedKFold(n_splits=5, shuffle=True)
 
         bar = progressbar.ProgressBar(
             min_value=0,
@@ -93,20 +92,24 @@ class MIRLOModel(LPIModel):
             ]
         ).start()
         if len(params) > 1:
-            for train_index, test_index in skf.split(X, y[:, 1]):
-                X_train, X_val = X[train_index], X[test_index]
-                y_train, y_val = y[train_index], y[test_index]
-                for i, param in enumerate(params):
-                    for _ in range(5):
-                        model = self._build_model(param)
-                        history = model.fit(
-                            X_train,
-                            y_train,
-                            verbose=0,
-                            epochs=param['epochs'],
-                            validation_data=(X_val, y_val)
-                        )
-                        accuracies[i] += history.history['val_accuracy'][-1]
+            X_train, X_val, y_train, y_val = train_test_split(
+                X,
+                y,
+                stratify=y,
+                shuffle=True,
+                test_size=.2
+            )
+            for i, param in enumerate(params):
+                for _ in range(5):
+                    model = self._build_model(param)
+                    history = model.fit(
+                        X_train,
+                        y_train,
+                        verbose=0,
+                        epochs=param['epochs'],
+                        validation_data=(X_val, y_val)
+                    )
+                    accuracies[i] += history.history['val_accuracy'][-1]
                     bar.increment()
         bar.finish()
 
